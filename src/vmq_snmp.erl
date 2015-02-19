@@ -13,10 +13,23 @@
 %% limitations under the License.
 
 -module(vmq_snmp).
--export([stop/0,
+-export([start/0,
+         stop/0,
          change_config/1]).
 
 -define(REPORTER, vmq_report_snmp).
+
+start() ->
+    SNMPConfig0 = application:get_all_env(vmq_snmp),
+    SNMPConfig = fix_paths(SNMPConfig0),
+    MIBTemplate = proplists:get_value(snmp_mib_template_file, SNMPConfig),
+    MIBDir = proplists:get_value(snmp_mib_dir, SNMPConfig),
+    start_snmp(SNMPConfig),
+    application:ensure_all_started(vmq_snmp),
+    Opts = [{mib_template, MIBTemplate},
+            {mib_dir, MIBDir}],
+    start_reporter(Opts).
+
 
 stop() ->
     application:stop(vmq_snmp),
