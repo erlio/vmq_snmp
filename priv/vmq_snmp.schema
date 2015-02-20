@@ -114,7 +114,7 @@
 
 {translation, "vmq_snmp.snmp_agent.versions",
  fun(Conf) ->
-         Str = cuttlefish:conf_get("vmq_snmp.snmp_agent.versions", Conf),
+         Str = cuttlefish:conf_get("snmp_agent.versions", Conf),
          {ok, Scanned,_} = erl_scan:string(Str++"."),
          {ok, Parsed} = erl_parse:parse_exprs(Scanned),
          {value, V, _} = erl_eval:exprs(Parsed,[]),
@@ -126,7 +126,7 @@
 
 {translation, "vmq_snmp.snmp_agent.mibs",
  fun(Conf) ->
-         Mibs = cuttlefish_variable:filter_by_prefix("vmq_snmp.snmp_agent.mibs", Conf),
+         Mibs = cuttlefish_variable:filter_by_prefix("snmp_agent.mibs", Conf),
          [ Mib || {_, Mib} <- Mibs]
  end
 }.
@@ -134,7 +134,7 @@
 
 {translation, "vmq_snmp.snmp_agent.audit_trail_log.size",
  fun(Conf) ->
-         Str = cuttlefish:conf_get("vmq_snmp.snmp_agent.audit_trail_log.size", Conf),
+         Str = cuttlefish:conf_get("snmp_agent.audit_trail_log.size", Conf),
          {ok, Scanned,_} = erl_scan:string(Str++"."),
          {ok, Parsed} = erl_parse:parse_exprs(Scanned),
          {value, {_,_} = V, _} = erl_eval:exprs(Parsed,[]),
