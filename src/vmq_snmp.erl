@@ -13,6 +13,7 @@
 %% limitations under the License.
 
 -module(vmq_snmp).
+-behaviour(on_config_change_hook).
 -export([start/0,
          stop/0,
          change_config/1]).
