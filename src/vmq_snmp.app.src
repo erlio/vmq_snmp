@@ -14,7 +14,7 @@
         {snmp_mib_dir, "/tmp/vmq_snmp"},
         {vmq_config_enabled, true},
         {vmq_plugin_hooks, [
-            {vmq_snmp, change_config, 1}
+            {vmq_snmp, change_config, 1, [internal]}
         ]},
         {snmp_agent, [
             {priority, normal},
