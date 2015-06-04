@@ -6,7 +6,6 @@
     {applications, [
         kernel,
         stdlib,
-        otp_mibs,
         snmp
     ]},
     {mod, { vmq_snmp_app, []}},
