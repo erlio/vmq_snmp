@@ -69,8 +69,6 @@ start_reporter(Opts) ->
     exometer_report:disable_reporter(?REPORTER),
     exometer_report:remove_reporter(?REPORTER),
     exometer_report:add_reporter(?REPORTER, Opts),
-    otp_mib:load(snmp_master_agent),
-    os_mon_mib:load(snmp_master_agent),
     ok.
 
 
