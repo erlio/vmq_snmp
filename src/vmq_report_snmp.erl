@@ -155,29 +155,25 @@ exometer_setopts(#exometer_entry{name = Name} = E, _Options, disabled, St0) ->
     disable_metric(E, St0);
 exometer_setopts(#exometer_entry{name = Name} = E, Options, _, St0) ->
     case lists:keyfind(snmp, 1, Options) of
-        false ->
-            ok;
-        {_, disabled} ->
-            update_subscriptions(Name, []),
-        disable_metric(E, St0);
-        {_, Subs} when is_list(Subs) ->
-            ok = update_subscriptions(Name, Subs),
-        {ok, St0};
-        {_, Err} ->
+	false ->
+	    ok;
+	{_, disabled} ->
+	    update_subscriptions(Name, []),
+	    disable_metric(E, St0);
+	{_, Subs} when is_list(Subs) ->
+	    ok = update_subscriptions(Name, Subs),
+	    {ok, St0};
+	{_, Err} ->
             lager:error("Option ~p has incorrect value ~p", [snmp, Err]),
-            {error, improper_option}
+	    {error, improper_option}
     end.
 
 
 exometer_terminate(_, #st{mib_file_path=MibPath0}) ->
     MibPath1 = filename:rootname(MibPath0),
-    case snmpa:unload_mibs(snmp_master_agent, [MibPath1]) of
-        ok ->
-            lager:info("MIB ~s unloaded", [MibPath1]);
-        {error, {'unload aborted at', _, not_loaded}} ->
-            %% this might happen if the repoter is restarted
-            ok
-    end.
+    ok = snmpa:unload_mibs(snmp_master_agent, [MibPath1]),
+    lager:info("MIB ~s unloaded", [MibPath1]),
+    ok.
 
 %%%===================================================================
 %%% External API
@@ -200,9 +196,6 @@ snmp_operation(get, {Metric, Dp}) ->
     lager:info("SNMP Get ~p:~p", [Metric, Dp]),
     {ok, [{Dp, V}]} = exometer:get_value(Metric, Dp),
     snmp_value(Metric, Dp, V);
-snmp_operation(new, Key) ->
-    lager:debug("Unhandled SNMP operation ~p on ~p", [new, Key]),
-    {noValue, noSuchObject};
 snmp_operation(Op, Key) ->
     lager:warning("Unhandled SNMP operation ~p on ~p", [Op, Key]),
     {noValue, noSuchObject}.
@@ -490,74 +483,75 @@ create_inform_bin(Name, Domain, Nr, Object, _) ->
      <<"-- INFORM ">>, Name, <<" END\n\n">>
     ].
 
-create_bin(Name, Dp, #exometer_entry{module=exometer, type=Type, options=Opts})
-  when Type == counter; Type == fast_counter ->
-    SNMPType = snmp_syntax(Type, Dp, Opts),
-    B = [
-         Name, <<" OBJECT-TYPE\n">>,
-         <<"    SYNTAX ", SNMPType/binary, "\n">>,
-         <<"    MAX-ACCESS read-only\n">>,
-         <<"    STATUS current\n">>,
-         <<"    DESCRIPTION \"\"\n">>
-        ],
-    {ok, binary:list_to_bin(B)};
-
-create_bin(Name, Dp, #exometer_entry{module=exometer_histogram, type=histogram,
-                                     options=Opts}) ->
-    Type = snmp_syntax(histogram, Dp, Opts),
-    B = [
-         Name, <<" OBJECT-TYPE\n">>,
-         <<"    SYNTAX ", Type/binary, "\n">>,
-         <<"    MAX-ACCESS read-only\n">>,
-         <<"    STATUS current\n">>,
-         <<"    DESCRIPTION \"\"\n">>
-        ],
-    {ok, binary:list_to_bin(B)};
-
-create_bin(Name, Dp, #exometer_entry{module=Mod}=E) ->
-    Exports = Mod:module_info(exports),
-    F = snmp_bin,
-    case proplists:get_value(F, Exports) of
-        3 ->
-            case Mod:snmp_bin(Name, Dp, E) of
-                undefined ->
-                    {error, binary_representation_undefined};
-                Bin ->
-                    {ok, Bin}
-            end;
-        _ ->
-            {error, {function_not_exported, {F, 1}}}
+create_bin(Name, Dp, #exometer_entry{module=Mod, type=Type, options=Opts}=E) ->
+    case is_build_in_probe_or_entry(Mod) of
+        true ->
+            %% handle object binary creation for build-in entries and probes
+            %% as a special case
+            SNMPType = snmp_syntax(Type, Dp, Opts),
+            B =
+                <<Name/binary, " OBJECT-TYPE\n"
+                  "    SYNTAX ", SNMPType/binary, "\n"
+                  "    MAX-ACCESS read-only\n"
+                  "    STATUS current\n"
+                  "    DESCRIPTION \"\"\n" >>,
+            {ok, B};
+        false ->
+            Function = snmp_bin,
+            Arity = 3,
+            case erlang:function_exported(Mod, Function, Arity) of
+                true ->
+                    case Mod:snmp_bin(Name, Dp, E) of
+                        undefined ->
+                            {error, binary_representation_undefined};
+                        Bin ->
+                            {ok, Bin}
+                    end;
+                false ->
+                    {error, {function_not_exported, {Mod, Function, Arity}}}
+            end
     end.
 
 snmp_value(Name, Dp, Value) ->
     Type = exometer:info(Name, type),
     Mod = exometer:info(Name, module),
-    case {Mod, Type, Dp} of
-        {exometer, T, _} when T == counter; T == fast_counter ->
-            {value, Value};
-        {exometer_histogram, histogram, mean} when is_float(Value) ->
-            {value, erlang:float_to_list(Value)};
-        {exometer_histogram, histogram, mean} when is_integer(Value) ->
-            {value, erlang:integer_to_list(Value)};
-        {exometer_histogram, histogram, _ } ->
-            {value, Value};
+    case is_build_in_probe_or_entry(Mod) of
+        true ->
+            case {Mod, Type, Dp} of
+                {exometer_histogram, histogram, mean} ->
+                    {value, number_to_list(Value)};
+                {exometer_histogram, uniform, mean} ->
+                    {value, number_to_list(Value)};
+                _ ->
+                    {value, Value}
+            end;
         _ ->
-            Exports = Mod:module_info(exports),
-            F = snmp_value,
-            case proplists:get_value(F, Exports) of
-                3 ->
+            case erlang:function_exported(Mod, snmp_value, 3) of
+                true ->
                     case Mod:snmp_value(Name, Dp, Value) of
                         undefined ->
-                            lager:error("SNMP value representation undefined in module ~p for ~p:~p", [Mod, Name, Dp]),
+                            lager:error("SNMP value representation undefined in"
+                                   "module ~p for ~p:~p", [Mod, Name, Dp]),
                             {noValue, noSuchObject};
                         NewValue ->
                             {value, NewValue}
                     end;
-                _ ->
-                    lager:error("snmp_value/3 not exported in module ~p for ~p:~p", [Mod, Name, Dp]),
+                false ->
+                    lager:error("snmp_value/3 not exported in module ~p for ~p:~p",
+                           [Mod, Name, Dp]),
                     {noValue, noSuchObject}
             end
     end.
+
+number_to_list(Value) when is_float(Value)   -> float_to_list(Value);
+number_to_list(Value) when is_integer(Value) -> integer_to_list(Value).
+
+is_build_in_probe_or_entry(exometer)           -> true;
+is_build_in_probe_or_entry(exometer_histogram) -> true;
+is_build_in_probe_or_entry(exometer_uniform)   -> true;
+is_build_in_probe_or_entry(exometer_spiral)    -> true;
+is_build_in_probe_or_entry(exometer_function)  -> true;
+is_build_in_probe_or_entry(_Mod)               -> false.
 
 metric_name(Name0, Dp) when is_integer(Dp) ->
     metric_name(Name0, erlang:integer_to_list(Dp));
@@ -626,7 +620,7 @@ write_funcs_file(Path) ->
     ok = file:write_file(Path, binary:list_to_bin(Objects1)).
 
 update_subscriptions(Name, []) ->
-    ok = exometer_report:unsubscribe_all(?MODULE, Name);
+    ok = exometer_report:unsubscribe_all(exometer_report_snmp, Name);
 update_subscriptions(Name, Subs0) ->
     Subs1 = exometer_util:drop_duplicates(Subs0),
     CurrentSubs0 = exometer_report:list_subscriptions(?MODULE),
@@ -637,17 +631,17 @@ update_subscriptions_(_, {[], [], [], _}) ->
     ok;
 update_subscriptions_(M, {[], [], [{New, Old} | Ch], Co}) ->
     {Dp0, _, Extra0} = option(Old),
-    exometer_report:unsubscribe(?MODULE, M, Dp0, Extra0),
+    exometer_report:unsubscribe(exometer_report_snmp, M, Dp0, Extra0),
     {Dp1, Int1, Extra1} = option(New),
-    exometer_report:subscribe(?MODULE, M, Dp1, Int1, Extra1),
+    exometer_report:subscribe(exometer_report_snmp, M, Dp1, Int1, Extra1),
     update_subscriptions_(M, {[], [], Ch, Co});
 update_subscriptions_(M, {[], [Opt | R], Ch, Co}) ->
     {Dp, _, Extra} = option(Opt),
-    exometer_report:unsubscribe(?MODULE, M, Dp, Extra),
+    exometer_report:unsubscribe(exometer_report_snmp, M, Dp, Extra),
     update_subscriptions_(M, {[], R, Ch, Co});
 update_subscriptions_(M, {[Opt | A], R, Ch, Co}) ->
     {Dp, Int, Extra} = option(Opt),
-    exometer_report:subscribe(?MODULE, M, Dp, Int, Extra),
+    exometer_report:subscribe(exometer_report_snmp, M, Dp, Int, Extra),
     update_subscriptions_(M, {A, R, Ch, Co}).
 
 -spec option({_, _} | {_, _, _}) -> {_, _, _}.
@@ -682,20 +676,18 @@ compare_subscriptions(Old, New) ->
 datapoints(Name) ->
     exometer:info(Name, datapoints).
 
+snmp_syntax(Type, Dp, Opts) ->
+    DefaultSnmpSyntax = default_snmp_syntax(Type, Dp),
+    snmp_syntax_opt(Dp, Opts, DefaultSnmpSyntax).
+
+default_snmp_syntax(counter, _Dp)      -> <<"Counter32">>;
+default_snmp_syntax(fast_counter, _Dp) -> <<"Counter32">>;
+default_snmp_syntax(histogram, mean)   -> <<"OCTET STRING (SIZE(0..64))">>;
+default_snmp_syntax(uniform, mean)     -> <<"OCTET STRING (SIZE(0..64))">>;
+default_snmp_syntax(_Type, _Dp)        -> <<"Gauge32">>.
+
 %% Allow for an option, {snmp_syntax, [{DataPoint, SYNTAX}]}, where
 %% SYNTAX is a valid SNMP SYNTAX expression (string() or binary()).
-%%
-snmp_syntax(Type, Dp, Opts) when Type==counter; Type==fast_counter ->
-    snmp_syntax_opt(Dp, Opts, <<"Counter32">>);
-snmp_syntax(histogram, Dp, Opts) ->
-    case Dp of
-        mean -> snmp_syntax_opt(mean, Opts, <<"OCTET STRING (SIZE(0..64))">>);
-        _    -> snmp_syntax_opt(Dp, Opts, <<"Gauge32">>)
-    end;
-snmp_syntax(_, Dp, Opts) ->
-    snmp_syntax_opt(Dp, Opts, <<"Gauge32">>).
-
-
 %% Made explicit for speed
 snmp_syntax_opt(Dp, Opts, Default) ->
     Res = case lists:keyfind(snmp_syntax, 1, Opts) of
@@ -714,15 +706,15 @@ snmp_syntax_opt(Dp, Opts, Default) ->
 
 newentry(#exometer_entry{name = Name, options = Options} = E, St0) ->
     case lists:keyfind(snmp, 1, Options) of
-        false ->
-            {ok, St0};
-        {_, disabled} ->
-            {ok, St0};
-        {_, Subs} when is_list(Subs) ->
-            {ok, St1} = enable_metric(E, St0),
-            ok = update_subscriptions(Name, Subs),
-            {ok, St1};
-        {_, Other} ->
+	false ->
+	    {ok, St0};
+	{_, disabled} ->
+	    {ok, St0};
+	{_, Subs} when is_list(Subs) ->
+	    {ok, St1} = enable_metric(E, St0),
+	    ok = update_subscriptions(Name, Subs),
+	    {ok, St1};
+	{_, Other} ->
             lager:error("Option ~p has incorrect value ~p", [snmp, Other]),
-            {error, improper_option}
+	    {error, improper_option}
     end.
